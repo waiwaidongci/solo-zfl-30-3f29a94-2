@@ -31,6 +31,8 @@
     close: ["executing"],
   };
   const ACTIVE_STATUSES = ["pending_review", "approved", "executing"]; // 参与冲突/气量占用
+  // 已“排定”的任务：基础数据变更后不得把它们留在无法继续的状态
+  const COMMITTED_STATUSES = ["approved", "executing"];
 
   const DEFAULT_SAC = 20;      // 缺省水面耗气量 L/min（人员未登记时）
   const GAS_MARGIN = 1.2;      // 计划安全余量 20%
@@ -282,13 +284,12 @@
         if (input.id) {
           saved = this._find(state, "cylinders", input.id);
           const before = this._snapshot(saved);
-          if (data.pressureBar < before.pressureBar) {
-            const reserved = this._cylinderReserved(state, before.id, null);
-            const freeAfter = cylinderFreeLiters({ ...before, pressureBar: data.pressureBar, reserveBar: data.reserveBar });
-            if (reserved > freeAfter)
-              throw new ValidationError("GAS_SHORTFALL", "下调后气量无法覆盖已排任务占用", { reserved, freeAfter });
-          }
           Object.assign(saved, data);
+          // 写入草稿后复核全部活动任务：容积调小、残压保护上调、压力下调都可能击穿占用
+          this._revalidateGasForActiveTasks(state, {
+            cylinder: data.code,
+            changed: Object.keys(data).filter(k => JSON.stringify(data[k]) !== JSON.stringify(before[k])),
+          });
           id = saved.id;
           return { actor, action: "update", entity: "cylinders", entityId: id, before, after: this._snapshot(saved) };
         }
@@ -319,6 +320,11 @@
           saved = this._find(state, "windows", input.id);
           const before = this._snapshot(saved);
           Object.assign(saved, data);
+          // 改写已有窗口（改恶劣/缩短/移址）后，已批准与执行中的任务仍须有良好天气覆盖
+          this._revalidateWeatherForCommittedTasks(state, {
+            window: input.id, siteId: data.siteId,
+            changed: Object.keys(data).filter(k => JSON.stringify(data[k]) !== JSON.stringify(before[k])),
+          });
           id = saved.id;
           return { actor, action: "update", entity: "windows", entityId: id, before, after: this._snapshot(saved) };
         }
@@ -478,6 +484,39 @@
       const weather = this._checkWeather(state, task);
       if (!weather.ok) throw new ValidationError("WEATHER_BLOCK", "天气窗口不允许该安排", weather);
       return true;
+    }
+
+    /* 基础数据变更后的安全复核（在事务草稿内、写盘前调用）。
+       任一排定任务因变更失去保障即抛错 → commit 整体丢弃，内存与磁盘都不留下部分修改。 */
+
+    // 气瓶改写（容积/残压/压力）后：全部活动任务都必须仍满足气量；
+    // 待复核任务同样占用气量（保守口径，沿用 _cylinderReserved 的统计范围）。
+    _revalidateGasForActiveTasks(state, context) {
+      for (const task of state.tasks.filter(t => ACTIVE_STATUSES.includes(t.status))) {
+        const gas = this._checkGas(state, task);
+        if (!gas.ok) {
+          throw new ValidationError(
+            "GAS_SHORTFALL",
+            `气瓶变更会使 ${task.code} 气量不足，请先补气或调整该潜次`,
+            { context: context || null, task: task.code, shortages: gas.shortages }
+          );
+        }
+      }
+    }
+
+    // 天气窗口“改写”（更新已有窗口）后：已批准/执行中的任务不得失去良好覆盖或与恶劣窗口重叠。
+    // 注意：新建恶劣窗口不算“改写”，允许先登记坏天气再拦截后续批准（见 approveTask 的复核）。
+    _revalidateWeatherForCommittedTasks(state, context) {
+      for (const task of state.tasks.filter(t => COMMITTED_STATUSES.includes(t.status))) {
+        const weather = this._checkWeather(state, task);
+        if (!weather.ok) {
+          throw new ValidationError(
+            "WEATHER_BLOCK",
+            `天气窗口变更会使已排定潜次 ${task.code} 失去良好天气覆盖，不能这样保存；请先驳回/调整该潜次`,
+            { context: context || null, task: task.code, ...weather }
+          );
+        }
+      }
     }
 
     /* 创建潜次（排班提交）。clientKey 为前端去重键：
@@ -646,6 +685,7 @@
     static TASK_STATUSES = TASK_STATUSES;
     static STATUS_LABELS = STATUS_LABELS;
     static ACTIVE_STATUSES = ACTIVE_STATUSES;
+    static COMMITTED_STATUSES = COMMITTED_STATUSES;
     static gasRequired = gasRequired;
     static gasActual = gasActual;
     static cylinderFreeLiters = cylinderFreeLiters;

@@ -433,3 +433,188 @@ test("纯 memory（无 storage）模式同样工作，便于嵌入环境", () =>
   const r = s.createTask(basePayload(), "调度员", "m1");
   assert.equal(r.task.status, "pending_review");
 });
+
+/* ================= 9. 基础数据变更后的安全一致性（回归） ================= */
+test("天气窗口改写为恶劣：已批准与执行中任务会被保护，窗口与任务状态均不变", () => {
+  const s = makeStore();
+  const win = s.list("windows")[0];
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  const winBefore = JSON.stringify(s.get("windows", win.id));
+  const auditsBefore = s.audits().length;
+  // 已批准
+  const e1 = (() => { try { s.upsertWindow({ ...win, state: "bad", note: "突发雷暴" }, "气象员"); return null; } catch (e) { return e; } })();
+  assert.equal(e1 && e1.code, "WEATHER_BLOCK");
+  assert.equal(e1.details.task, "DIVE-001");
+  assert.equal(e1.details.reason, "bad-window");
+  assert.ok(e1.details.context && e1.details.context.window === win.id, "明细缺少变更上下文");
+  assert.equal(JSON.stringify(s.get("windows", win.id)), winBefore, "窗口被部分修改");
+  assert.equal(s.get("tasks", t.id).status, "approved", "任务状态被动到");
+  assert.equal(s.audits().length, auditsBefore, "失败保存不得写审计");
+  // 执行中同样被拦
+  s.startTask(t.id, "现场指挥");
+  assert.equal(errCode(() => s.upsertWindow({ ...win, state: "bad", note: "突发雷暴" }, "气象员")), "WEATHER_BLOCK");
+  assert.equal(s.get("tasks", t.id).status, "executing");
+});
+
+test("天气窗口缩短使已批准任务失去良好覆盖时被拦；有另一窗口补位后该改写放行", () => {
+  const s = makeStore();
+  const { dayStart } = seed();
+  const win = s.list("windows")[0];
+  const t0 = s.list("tasks")[0]; // 09:00–10:00
+  // 第二个批准任务 10:00–11:00，先用独立良好窗口 win-2 覆盖
+  s.upsertWindow({ siteId: "site-1", from: dayStart + 2 * H, to: dayStart + 3 * H, state: "good", note: "补位窗口" }, "气象员");
+  const t1 = s.createTask(basePayload({
+    code: "DIVE-101", start: dayStart + 2 * H, end: dayStart + 3 * H,
+    assignments: [{ diverId: "div-2", cylinderId: "cyl-2" }],
+  }), "调度员", "k2").task;
+  s.approveTask(t0.id, "复核员");
+  s.approveTask(t1.id, "复核员");
+  // 缩短 win-1 到 09:30 结束：DIVE-001（09–10）失去覆盖
+  assert.equal(errCode(() => s.upsertWindow({ ...win, to: dayStart + 90 * MIN }, "气象员")), "WEATHER_BLOCK");
+  // 把 win-1 改写为恶劣：DIVE-001 与之重叠被拦（即使另有良好窗口，与恶劣重叠本身也禁止）
+  assert.equal(errCode(() => s.upsertWindow({ ...win, state: "bad", note: "雷暴" }, "气象员")), "WEATHER_BLOCK");
+  // 给 DIVE-001 的时段补一个良好窗口后，把 win-1 缩短为 08:00–09:00：
+  // DIVE-001(09–10) 由补位窗口覆盖、DIVE-101 由 win-2 覆盖 → 该缩短改写放行
+  s.upsertWindow({ siteId: "site-1", from: dayStart + H, to: dayStart + 2 * H, state: "good", note: "补位" }, "气象员");
+  s.upsertWindow({ ...win, to: dayStart + H, note: "主窗口缩短" }, "气象员");
+  assert.equal(s.get("windows", win.id).to, dayStart + H);
+  assert.equal(s.get("tasks", t0.id).status, "approved");
+});
+
+test("待复核任务不阻止窗口改写；但带病任务在批准时仍被拦（保护口径只卡已排定任务）", () => {
+  const s = makeStore();
+  const { dayStart } = seed();
+  const win = s.list("windows")[0];
+  // 建一个由独立窗口 win-2 覆盖的批准任务，保证“win-1 改恶劣”本身不因别的批准任务失败
+  s.upsertWindow({ siteId: "site-1", from: dayStart + 2 * H, to: dayStart + 3 * H, state: "good" }, "气象员");
+  const other = s.createTask(basePayload({
+    code: "DIVE-101", start: dayStart + 2 * H, end: dayStart + 3 * H,
+    assignments: [{ diverId: "div-2", cylinderId: "cyl-2" }],
+  }), "调度员", "k2").task;
+  s.approveTask(other.id, "复核员");
+  // 种子 DIVE-001 仍待复核；把 win-1 改写成只覆盖 08:00–10:00 的恶劣窗口
+  //（与已批准的 DIVE-101[10:00–11:00] 首尾相接、不重叠，故不因 DIVE-101 被拦）
+  s.upsertWindow({ ...win, state: "bad", from: dayStart, to: dayStart + 2 * H, note: "海况转差" }, "气象员");
+  assert.equal(s.get("windows", win.id).state, "bad");
+  // 但 DIVE-001 此时无法批准
+  assert.equal(errCode(() => s.approveTask(s.list("tasks").find(t => t.code === "DIVE-001").id, "复核员")), "WEATHER_BLOCK");
+  // DIVE-101 仍可正常执行/关闭
+  s.startTask(other.id, "现场指挥");
+  const closed = s.closeTask(other.id, { actualMin: 20, outcome: "normal" }, "现场指挥");
+  assert.equal(closed.status, "closed");
+});
+
+test("窗口移址改写使原遗址已批准任务失去覆盖时被拦", () => {
+  const s = makeStore();
+  const win = s.list("windows")[0];
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  s.upsertSite({ code: "SITE-02", name: "二号点", depthM: 10 }, "调度员");
+  const site2 = s.list("sites")[1];
+  assert.equal(errCode(() => s.upsertWindow({ ...win, siteId: site2.id }, "气象员")), "WEATHER_BLOCK");
+  assert.equal(s.get("windows", win.id).siteId, "site-1", "遗址归属被部分修改");
+});
+
+test("气瓶容积调小使已批准任务气量不足时被拦（改的是容积不是压力）", () => {
+  const s = makeStore();
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  const c = s.get("cylinders", "cyl-1");
+  const before = JSON.stringify(c);
+  const e = (() => { try { s.upsertCylinder({ ...c, volumeL: 8 }, "器材员"); return null; } catch (e) { return e; } })();
+  assert.equal(e && e.code, "GAS_SHORTFALL");
+  assert.equal(e.details.task, "DIVE-001");
+  assert.ok(e.details.shortages[0].deficit > 0);
+  assert.equal(JSON.stringify(s.get("cylinders", "cyl-1")), before, "气瓶被部分修改");
+  assert.equal(s.get("tasks", t.id).status, "approved");
+});
+
+test("残压保护上调击穿活动任务气量时被拦（多任务累计口径）", () => {
+  const s = makeStore();
+  const { dayStart } = seed();
+  // 两个不重叠任务共用 cyl-2，各 12 分钟：
+  //  div-2 SAC20: 20*12*2.8*1.2 = 806L；div-3 SAC22: 22*12*2.8*1.2 = 887L；合计 1693L
+  const a = s.createTask(basePayload({
+    code: "A-1", start: dayStart + 3 * H, end: dayStart + 210 * MIN, plannedMin: 12,
+    assignments: [{ diverId: "div-2", cylinderId: "cyl-2" }],
+  }), "调度员", "ca1").task;
+  const b = s.createTask(basePayload({
+    code: "A-2", start: dayStart + 6 * H, end: dayStart + 390 * MIN, plannedMin: 12,
+    assignments: [{ diverId: "div-3", cylinderId: "cyl-2" }],
+  }), "调度员", "ca2").task;
+  s.approveTask(a.id, "复核员");
+  s.approveTask(b.id, "复核员");
+  const c2 = s.get("cylinders", "cyl-2");
+  // 残压保护 50→100：可用 12×(220-100)=1440 < 1693，累计不足 → 拦
+  // （单看任一个：806/887 均 < 1440，本用例专门验证跨任务累计）
+  const e = (() => { try { s.upsertCylinder({ ...c2, reserveBar: 100 }, "器材员"); return null; } catch (e) { return e; } })();
+  assert.equal(e && e.code, "GAS_SHORTFALL");
+  assert.ok(["A-1", "A-2"].includes(e.details.task));
+  assert.equal(s.get("cylinders", "cyl-2").reserveBar, 50);
+  // 残压保护下调（更宽松）放行
+  s.upsertCylinder({ ...c2, reserveBar: 30 }, "器材员");
+  assert.equal(s.get("cylinders", "cyl-2").reserveBar, 30);
+});
+
+test("压力下调击穿占用被新复核拦截；补气上调放行，且任务可继续执行→关闭", () => {
+  const s = makeStore();
+  const t = s.list("tasks")[0]; // cyl-1 计划占用 1814L
+  s.approveTask(t.id, "复核员");
+  const c = s.get("cylinders", "cyl-1");
+  // 220→190：可用 12×140=1680 < 1814
+  const e = (() => { try { s.upsertCylinder({ ...c, pressureBar: 190 }, "器材员"); return null; } catch (e) { return e; } })();
+  assert.equal(e && e.code, "GAS_SHORTFALL");
+  assert.equal(e.details.task, "DIVE-001");
+  // 补气上调允许
+  s.upsertCylinder({ ...c, pressureBar: 230 }, "器材员");
+  assert.equal(s.get("cylinders", "cyl-1").pressureBar, 230);
+  // 已批准任务照常执行并关闭
+  s.startTask(t.id, "现场指挥");
+  const closed = s.closeTask(t.id, { actualMin: 25, outcome: "normal" }, "现场指挥");
+  assert.equal(closed.status, "closed");
+});
+
+test("改无人占用的气瓶、延长良好窗口等合法基础数据变更不受影响", () => {
+  const s = makeStore();
+  const { dayStart } = seed();
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  // 新增气瓶后随意改它（无活动任务占用）
+  const free = s.upsertCylinder({ code: "C-NEW", volumeL: 11, pressureBar: 100, reserveBar: 50 }, "器材员");
+  s.upsertCylinder({ ...free, volumeL: 8, pressureBar: 60, reserveBar: 60 }, "器材员");
+  assert.equal(s.get("cylinders", free.id).volumeL, 8);
+  // 延长良好窗口（起点不动，只延后结束）允许
+  const win = s.list("windows")[0];
+  s.upsertWindow({ ...win, to: dayStart + 20 * H, note: "延长到20点" }, "气象员");
+  assert.equal(s.get("windows", win.id).to, dayStart + 20 * H);
+  // 已关闭任务不再参与气瓶复核
+  s.startTask(t.id, "现场指挥");
+  s.closeTask(t.id, { actualMin: 20, outcome: "normal" }, "现场指挥");
+  const c1 = s.get("cylinders", "cyl-1");
+  s.upsertCylinder({ ...c1, volumeL: 6 }, "器材员");
+  assert.equal(s.get("cylinders", "cyl-1").volumeL, 6);
+});
+
+test("基础数据变更被拒时事务原子：磁盘不写、内存不变、重载一致、审计无新增", () => {
+  const mem = new MemStorage();
+  const s = makeStore(mem);
+  const win = s.list("windows")[0];
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  const diskBefore = mem.getItem(Store.DB_KEY);
+  const writesBefore = mem.writes;
+  const auditsBefore = s.audits().length;
+
+  assert.equal(errCode(() => s.upsertWindow({ ...win, state: "bad", note: "雷暴" }, "气象员")), "WEATHER_BLOCK");
+  const c = s.get("cylinders", "cyl-1");
+  assert.equal(errCode(() => s.upsertCylinder({ ...c, volumeL: 6 }, "器材员")), "GAS_SHORTFALL");
+
+  assert.equal(mem.writes, writesBefore, "两次被拒保存都不允许 setItem");
+  assert.equal(mem.getItem(Store.DB_KEY), diskBefore, "磁盘内容发生变化");
+  assert.equal(s.audits().length, auditsBefore, "被拒保存不得写审计");
+  const reloaded = new Store({ storage: mem, now, uuid: () => "u" });
+  assert.equal(reloaded.get("windows", win.id).state, "good");
+  assert.equal(reloaded.get("cylinders", "cyl-1").volumeL, 12);
+  assert.equal(reloaded.get("tasks", t.id).status, "approved");
+});

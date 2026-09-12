@@ -207,6 +207,53 @@ async function shot(page, name) { await page.screenshot({ path: path.join(SHOTS,
       assert((await page.locator(".kcol").nth(4).locator(".task-card", { hasText: "DIVE-010" }).count()) === 1, "未进入已驳回列");
     });
 
+    await check("安全一致性：已批准任务下，窗口改恶劣/气瓶容积改小均被拦且不落库，随后可驳回处置", async () => {
+      // 新建并批准 DIVE-060：高岸 / cyl-3，15:00–15:50
+      const [sv, ev] = await page.evaluate(() => {
+        const w = __app.store.list("windows")[0];
+        const p = n => String(n).padStart(2, "0");
+        const f = off => { const d = new Date(w.from + off); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+        return [f(7 * 3600000), f(7 * 3600000 + 50 * 60000)];
+      });
+      await page.fill("#taskForm [name=code]", "DIVE-060");
+      await page.fill("#taskForm [name=start]", sv);
+      await page.fill("#taskForm [name=end]", ev);
+      await page.fill("#taskForm [name=plannedMin]", "12");
+      await page.selectOption(".assign-row .a-diver", { label: "高岸（SAC 22）" });
+      await page.selectOption(".assign-row .a-cylinder", { label: "C-12L-03 180bar" });
+      await page.click("#submitTaskBtn");
+      assert((await toastText(page)).includes("待复核"), "DIVE-060 未提交");
+      await page.locator(".task-card", { hasText: "DIVE-060" }).locator("button[data-act='approve']").click();
+      assert((await toastText(page)).includes("已批准"), "DIVE-060 未批准");
+
+      // 1) 把覆盖该任务的良好窗口改成恶劣 → 必须被拦
+      await page.click('#tabs button[data-tab="data"]');
+      await page.locator("#windowList .mini-item").first().click();
+      assert(await page.isChecked("#windowForm [name=stateBadge]") === false, "载入的种子窗口应为良好");
+      await page.check("#windowForm [name=stateBadge]");
+      await page.click("#windowForm button");
+      const t1 = await toastText(page);
+      assert(t1.includes("天气窗口") && t1.includes("DIVE-060"), "窗口改恶劣应被拦: " + t1);
+      assert(await page.evaluate(() => __app.store.list("windows")[0].state) === "good", "坏窗口竟落库");
+
+      // 2) 把该任务气瓶容积 12→6 升 → 可用 6×130=780L < 需求 887L，必须被拦，字段不落库
+      await page.locator("#cylinderList .mini-item", { hasText: "C-12L-03" }).click();
+      await page.fill("#cylinderForm [name=volumeL]", "6");
+      await page.click("#cylinderForm button");
+      const t2 = await toastText(page);
+      assert(t2.includes("气量不足") && t2.includes("DIVE-060"), "容积改小应被拦: " + t2);
+      assert(await page.evaluate(() => __app.store.get("cylinders", "cyl-3").volumeL) === 12, "容积修改竟落库");
+
+      // 3) 处置闭环：回到看板驳回该任务
+      await page.click('#tabs button[data-tab="board"]');
+      await page.locator(".task-card", { hasText: "DIVE-060" }).locator("button[data-act='reject']").click();
+      await page.waitForSelector("#modalBackdrop:not([hidden])");
+      await page.fill("#modalForm [name=reason]", "海况与气量复核不通过，驳回");
+      await page.click("#modalConfirm");
+      await page.waitForSelector("#modalBackdrop", { state: "hidden" });
+      assert((await toastText(page)).includes("已驳回"), "应可驳回处置");
+    });
+
     await check("重复提交幂等：同一 clientKey 只产生一条（浏览器内数据层验证）", async () => {
       const r = await page.evaluate(() => {
         const w = __app.store.list("windows")[0];
