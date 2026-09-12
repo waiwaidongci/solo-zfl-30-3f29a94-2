@@ -1,0 +1,10 @@
+{
+  "name": "潜水作业排班与安全复核台",
+  "short_name": "潜水排班台",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#e8f2f3",
+  "theme_color": "#0f5262",
+  "icons": []
+}

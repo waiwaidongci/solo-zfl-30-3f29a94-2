@@ -1,0 +1,17 @@
+{
+  "name": "dive-ops-console",
+  "version": "1.0.0",
+  "private": true,
+  "description": "可离线使用的潜水作业排班与安全复核台（零依赖单页应用）",
+  "scripts": {
+    "test": "node --test test/store.test.js",
+    "test:e2e": "node test/e2e/verify.js",
+    "start": "node tools/serve.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

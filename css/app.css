@@ -1,0 +1,145 @@
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+:root {
+  --teal: #1d6c78;
+  --teal-dark: #0c4451;
+  --teal-deep: #07333f;
+  --line: #c9dadc;
+  --bg: #e8f2f3;
+  --muted: #5c7378;
+  --danger: #b3382c;
+  --warn: #b56c38;
+  --ok: #2c7a4b;
+}
+html, body { margin: 0; padding: 0; }
+body { font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: #183035; }
+h1 { margin: 0; font-size: 22px; }
+h2 { font-size: 16px; margin: 4px 0 10px; }
+h3 { margin: 0 0 10px; }
+button { border: 0; border-radius: 8px; padding: 10px 13px; background: var(--teal); color: #fff; font-weight: 700; cursor: pointer; font-size: 14px; }
+button:hover { filter: brightness(1.08); }
+button:disabled { background: #9db6ba; cursor: not-allowed; }
+button.secondary { background: #64777b; }
+button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--line); }
+button.small { padding: 5px 9px; font-size: 12px; border-radius: 6px; }
+button.danger { background: var(--danger); }
+input, select, textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 9px; font: inherit; background: #fff; }
+textarea { min-height: 60px; }
+label { display: block; margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+label > input, label > select { margin-top: 4px; }
+.muted { color: var(--muted); font-size: 13px; }
+
+/* 顶栏 */
+.topbar { padding: 14px 20px; background: #fff; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+.top-actions { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.operator { margin: 0; min-width: 180px; }
+.operator input { margin-top: 4px; }
+
+/* 标签页 */
+.tabs { display: flex; gap: 4px; padding: 10px 16px 0; background: #fff; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.tabs button { background: #dce8e9; color: #315057; border-radius: 8px 8px 0 0; padding: 10px 16px; }
+.tabs button.active { background: var(--teal); color: #fff; }
+.tabpane { display: none; padding: 14px 16px 40px; }
+.tabpane.active { display: block; }
+
+.panel { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* 排班表单 */
+.grid-form { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 14px; }
+.grid-form label { margin: 0; }
+.grid-form .span2 { grid-column: span 3; }
+.row-head { display: flex; justify-content: space-between; align-items: center; }
+.form-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.assign-rows { display: grid; gap: 8px; }
+.assign-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; }
+.assign-row button { background: var(--danger); padding: 9px 11px; }
+
+/* 看板过滤与列 */
+.board-filters { display: grid; grid-template-columns: 200px 200px 1fr; gap: 8px; }
+.kanban { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; align-items: start; }
+.kcol { background: rgba(255,255,255,.65); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-height: 120px; }
+.kcol h4 { margin: 2px 4px 8px; font-size: 13px; color: #315057; display: flex; justify-content: space-between; }
+.task-card { background: #fff; border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.task-card.pending_review { border-left-color: var(--warn); }
+.task-card.approved { border-left-color: var(--teal); }
+.task-card.executing { border-left-color: #2b5fa8; }
+.task-card.closed { border-left-color: var(--ok); }
+.task-card.rejected { border-left-color: var(--danger); }
+.task-card .code { font-weight: 800; font-size: 15px; }
+.task-card .meta { font-size: 12.5px; color: var(--muted); margin: 4px 0; }
+.pill { display: inline-block; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; margin: 2px 4px 2px 0; }
+.pill.bad { border-color: var(--danger); color: var(--danger); }
+.pill.good { border-color: var(--ok); color: var(--ok); }
+.card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.card-actions button { padding: 6px 10px; font-size: 12.5px; }
+.assignee { font-size: 12.5px; }
+
+/* 基础数据 */
+.data-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-items: start; }
+.stack-form { display: grid; gap: 6px; margin-bottom: 10px; }
+.mini-list { display: grid; gap: 6px; max-height: 300px; overflow: auto; }
+.mini-item { border: 1px solid #d7e4e5; border-radius: 6px; padding: 7px 9px; font-size: 13px; cursor: pointer; }
+.mini-item:hover { background: #eef8f9; }
+.inline-flat { display: flex; align-items: center; gap: 6px; margin: 4px 0; color: #183035; font-size: 14px; }
+.inline-flat input { width: auto; }
+
+/* 审计 */
+.audit-list { display: grid; gap: 8px; max-height: 70vh; overflow: auto; }
+.audit-item { border: 1px solid #d7e4e5; border-radius: 6px; padding: 9px 11px; font-size: 13px; }
+.audit-item .head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-weight: 700; }
+.audit-item details { margin-top: 5px; }
+.audit-item pre { margin: 4px 0 0; background: #f3f8f9; border-radius: 6px; padding: 8px; font-size: 11.5px; overflow: auto; max-height: 260px; }
+
+/* 弹层 */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(7,51,63,.5); display: grid; place-items: center; z-index: 50; padding: 16px; }
+.modal { background: #fff; border-radius: 10px; padding: 18px; width: min(480px, 100%); max-height: 90vh; overflow: auto; }
+.modal .form-actions { margin-top: 12px; }
+#modalBody label { margin-top: 10px; }
+
+/* 提示 */
+.toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--teal-deep); color: #fff; padding: 11px 18px; border-radius: 8px; font-size: 14px; z-index: 60; max-width: min(680px, 92vw); box-shadow: 0 8px 24px rgba(0,0,0,.3); white-space: pre-wrap; }
+.toast.error { background: var(--danger); }
+.toast.warn { background: var(--warn); }
+
+/* 地图（沿用原单页） */
+.app { display: grid; grid-template-columns: 1fr 360px; gap: 16px; }
+.map { position: relative; height: calc(100vh - 220px); min-height: 460px; overflow: hidden; background: radial-gradient(circle at 30% 20%, #5fa8b1, #0f5262 55%, #07333f); border-radius: 8px; border: 1px solid #0c4451; cursor: crosshair; }
+.map-hint { margin-bottom: 8px; }
+.wreck { position: absolute; left: 24%; top: 28%; width: 52%; height: 31%; border: 3px solid rgba(220,235,224,.55); border-radius: 48% 44% 42% 50%; transform: rotate(-9deg); }
+.rib { position: absolute; width: 2px; height: 36%; background: rgba(220,235,224,.35); top: 27%; transform: rotate(-9deg); }
+.marker { position: absolute; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 800; transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,.7); box-shadow: 0 4px 12px rgba(0,0,0,.35); cursor: pointer; }
+.marker.selected { outline: 4px solid rgba(255,234,124,.75); }
+.ceramic { background: #b56c38; } .wood { background: #6c4b2f; } .metal { background: #6e7880; } .unknown { background: #725ca6; }
+.toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.list { display: grid; gap: 8px; max-height: 300px; overflow: auto; }
+.item { border: 1px solid #d7e4e5; border-radius: 8px; padding: 10px; cursor: pointer; }
+.item.active { border-color: var(--teal); background: #eef8f9; }
+.timeline { display: grid; gap: 8px; max-height: 300px; overflow: auto; }
+
+/* 平板 */
+@media (max-width: 1100px) {
+  .data-grid { grid-template-columns: repeat(2, 1fr); }
+  .kanban { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* 手机 */
+@media (max-width: 720px) {
+  .topbar { display: block; padding: 12px; }
+  h1 { font-size: 18px; }
+  .top-actions { margin-top: 10px; }
+  .top-actions button { flex: 1; }
+  .operator { width: 100%; }
+  .tabs { padding: 8px 8px 0; overflow-x: auto; flex-wrap: nowrap; }
+  .tabs button { white-space: nowrap; padding: 9px 12px; }
+  .tabpane { padding: 10px; }
+  .grid-form { grid-template-columns: 1fr; }
+  .grid-form .span2 { grid-column: span 1; }
+  .board-filters { grid-template-columns: 1fr 1fr; }
+  .board-filters #taskSearch { grid-column: span 2; }
+  .kanban { grid-template-columns: 1fr; }
+  .data-grid { grid-template-columns: 1fr; }
+  .app { grid-template-columns: 1fr; }
+  .map { min-height: 340px; height: 56vw; }
+  .assign-row { grid-template-columns: 1fr 1fr 40px; }
+}
