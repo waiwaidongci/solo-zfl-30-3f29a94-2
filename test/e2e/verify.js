@@ -254,6 +254,46 @@ async function shot(page, name) { await page.screenshot({ path: path.join(SHOTS,
       assert((await toastText(page)).includes("已驳回"), "应可驳回处置");
     });
 
+    await check("SAC 一致性：上调击穿活动任务被拦且不落库；下调放行并重算计划气量", async () => {
+      // 新建并批准 DIVE-070：林澜(div-2) / cyl-2，09:30–09:50，12 分钟，计划 806L
+      const [sv, ev] = await page.evaluate(() => {
+        const w = __app.store.list("windows")[0];
+        const p = n => String(n).padStart(2, "0");
+        const f = off => { const d = new Date(w.from + off); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+        return [f(90 * 60000), f(110 * 60000)];
+      });
+      await page.fill("#taskForm [name=code]", "DIVE-070");
+      await page.fill("#taskForm [name=start]", sv);
+      await page.fill("#taskForm [name=end]", ev);
+      await page.fill("#taskForm [name=plannedMin]", "12");
+      await page.selectOption(".assign-row .a-diver", { label: "林澜（SAC 20）" });
+      await page.selectOption(".assign-row .a-cylinder", { label: "C-12L-02 220bar" });
+      await page.click("#submitTaskBtn");
+      assert((await toastText(page)).includes("待复核"), "DIVE-070 未提交");
+      await page.locator(".task-card", { hasText: "DIVE-070" }).locator("button[data-act='approve']").click();
+      assert((await toastText(page)).includes("已批准"), "DIVE-070 未批准");
+
+      // 1) SAC 20→60：需求 2419L > cyl-2 可用 2040L → 拒绝，数据不变
+      await page.click('#tabs button[data-tab="data"]');
+      await page.locator("#diverList .mini-item", { hasText: "林澜" }).click();
+      await page.fill("#diverForm [name=sac]", "60");
+      await page.click("#diverForm button");
+      const t1 = await toastText(page);
+      assert(t1.includes("气量不足") && t1.includes("DIVE-070"), "SAC 上调应被拦: " + t1);
+      assert(await page.evaluate(() => __app.store.get("divers", "div-2").sac) === 20, "SAC 竟落库");
+      assert(await page.evaluate(() => __app.store.list("tasks").find(t => t.code === "DIVE-070").assignments[0].plannedLiters) === 806, "计划气量被部分修改");
+
+      // 2) SAC 20→18：需求 726L，放行并同步计划气量，写联动重算审计
+      await page.fill("#diverForm [name=sac]", "18");
+      await page.click("#diverForm button");
+      const t2 = await toastText(page);
+      assert(t2.includes("已保存"), "SAC 下调应放行: " + t2);
+      assert(await page.evaluate(() => __app.store.get("divers", "div-2").sac) === 18, "SAC 未保存");
+      assert(await page.evaluate(() => __app.store.list("tasks").find(t => t.code === "DIVE-070").assignments[0].plannedLiters) === 726, "计划气量未重算");
+      assert(await page.evaluate(() => __app.store.audits().some(a => a.action === "recalc" && a.note.includes("20→18"))), "缺少联动重算审计");
+      await page.click('#tabs button[data-tab="board"]');
+    });
+
     await check("重复提交幂等：同一 clientKey 只产生一条（浏览器内数据层验证）", async () => {
       const r = await page.evaluate(() => {
         const w = __app.store.list("windows")[0];

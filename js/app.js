@@ -59,8 +59,12 @@
         return e.message + "：\n" + (d || []).map(x => `· 气瓶 ${x.cylinder} 与 ${x.otherTask} 同时段冲突`).join("\n");
       case "GAS_SHORTFALL":
         if (Array.isArray(d)) return e.message + "：\n" + d.map(x => `· ${x.diver} / ${x.cylinder}：需求 ${x.need}L，其它任务已占 ${x.reservedByOthers}L，可用 ${x.free}L，缺口 ${x.deficit}L`).join("\n");
-        if (d && Array.isArray(d.shortages)) return e.message + "：\n" + d.shortages.map(x =>
-          `· 潜次 ${d.task}：${x.diver} / ${x.cylinder} 缺口 ${x.deficit}L（已占 ${x.reservedByOthers}L，可用 ${x.free}L）`).join("\n");
+        if (d && Array.isArray(d.shortages)) {
+          const cause = d.context && d.context.reason === "sac-change"
+            ? `（潜水员 ${d.context.diver} SAC ${d.context.from}→${d.context.to} 后）` : "";
+          return e.message + cause + "：\n" + d.shortages.map(x =>
+            `· 潜次 ${d.task}：${x.diver} / ${x.cylinder} 缺口 ${x.deficit}L（已占 ${x.reservedByOthers}L，可用 ${x.free}L）`).join("\n");
+        }
         return `${e.message}：需 ${d.deficit}L（已用 ${d.used}L，其它占用 ${d.reservedByOthers}L，可用 ${d.free}L）`;
       case "WEATHER_BLOCK":
         if (d && d.task) return e.message + (d.reason === "bad-window" ? "（与恶劣窗口重叠）" : "（良好窗口覆盖不足）");
@@ -474,7 +478,7 @@
   /* ==================================================================
    * 审计页
    * ================================================================== */
-  const ACTION_CN = { create: "创建", update: "修改", delete: "删除", approve: "批准", reject: "驳回", start: "开始执行", close: "关闭" };
+  const ACTION_CN = { create: "创建", update: "修改", delete: "删除", approve: "批准", reject: "驳回", start: "开始执行", close: "关闭", recalc: "联动重算" };
   const ENTITY_CN = { tasks: "潜次", marks: "标记", sites: "遗址", divers: "人员", cylinders: "气瓶", windows: "天气窗口" };
   function renderAudit() {
     const q = $("#auditEntityFilter").value;

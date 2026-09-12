@@ -618,3 +618,132 @@ test("基础数据变更被拒时事务原子：磁盘不写、内存不变、�
   assert.equal(reloaded.get("cylinders", "cyl-1").volumeL, 12);
   assert.equal(reloaded.get("tasks", t.id).status, "approved");
 });
+
+/* ================= 10. 潜水员 SAC 变更后的活动任务一致性（回归） ================= */
+test("单任务：SAC 上调到气量不足时拒绝保存，人员/任务计划气量/审计/磁盘均不变", () => {
+  const mem = new MemStorage();
+  const s = makeStore(mem);
+  const t = s.list("tasks")[0]; // div-1 陈潜 SAC18 / cyl-1，计划 1814L；cyl-1 可用 12×170=2040L
+  s.approveTask(t.id, "复核员");
+  const writesBefore = mem.writes;
+  const auditsBefore = s.audits().length;
+  const diverSnap = JSON.stringify(s.get("divers", "div-1"));
+  const planBefore = s.get("tasks", t.id).assignments[0].plannedLiters;
+  // SAC 18→30：需求 30×30×2.8×1.2 = 3024L > 2040L
+  const code = errCode(() => s.upsertDiver({ ...s.get("divers", "div-1"), sac: 30 }, "器材员"));
+  assert.equal(code, "GAS_SHORTFALL");
+  assert.equal(JSON.stringify(s.get("divers", "div-1")), diverSnap, "人员被部分修改");
+  assert.equal(s.get("divers", "div-1").sac, 18);
+  assert.equal(s.get("tasks", t.id).assignments[0].plannedLiters, planBefore, "任务计划气量被部分修改");
+  assert.equal(s.get("tasks", t.id).status, "approved");
+  assert.equal(s.audits().length, auditsBefore, "失败保存不得写审计");
+  assert.equal(mem.writes, writesBefore, "失败保存不得写盘");
+  const reloaded = new Store({ storage: mem, now, uuid: () => "u" });
+  assert.equal(reloaded.get("divers", "div-1").sac, 18, "磁盘上 SAC 被修改");
+  assert.equal(reloaded.get("tasks", t.id).assignments[0].plannedLiters, planBefore, "磁盘上计划气量被修改");
+});
+
+test("单任务：SAC 小幅上调仍在余量内时放行，并同步重算计划气量、记录联动审计", () => {
+  const s = makeStore();
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  // 18→19：需求 19×30×2.8×1.2 = 1915L ≤ 2040L
+  s.upsertDiver({ ...s.get("divers", "div-1"), sac: 19 }, "器材员");
+  assert.equal(s.get("divers", "div-1").sac, 19);
+  assert.equal(s.get("tasks", t.id).assignments[0].plannedLiters, Store.gasRequired(18, 30, 19));
+  const rec = s.audits().find(a => a.action === "recalc" && a.entityId === t.id);
+  assert.ok(rec, "缺少联动重算审计");
+  assert.equal(rec.before.assignments[0].plannedLiters, 1814);
+  assert.equal(rec.after.assignments[0].plannedLiters, Store.gasRequired(18, 30, 19));
+  assert.ok(rec.note.includes("18→19"), "重算说明未记录前后 SAC: " + rec.note);
+});
+
+test("多任务累计：SAC 上调后单看各自都够、合计超瓶，仍拒绝且全部数据不变", () => {
+  const s = makeStore();
+  const { dayStart } = seed();
+  // cyl-2 可用 12×(220-50)=2040L；安排两个不重叠任务共用 cyl-2：
+  //  div-2(SAC20) 12min = 806L；div-3(SAC22) 12min = 887L；合计 1693L
+  const a = s.createTask(basePayload({
+    code: "S-1", start: dayStart + 3 * H, end: dayStart + 210 * MIN, plannedMin: 12,
+    assignments: [{ diverId: "div-2", cylinderId: "cyl-2" }],
+  }), "调度员", "sc1").task;
+  const b = s.createTask(basePayload({
+    code: "S-2", start: dayStart + 6 * H, end: dayStart + 390 * MIN, plannedMin: 12,
+    assignments: [{ diverId: "div-3", cylinderId: "cyl-2" }],
+  }), "调度员", "sc2").task;
+  s.approveTask(a.id, "复核员");
+  s.approveTask(b.id, "复核员");
+  // 把 div-2 的 SAC 20→28：其需求变 28×12×2.8×1.2 = 1129L；1129+887=2016 ≤ 2040 仍够 → 放行
+  s.upsertDiver({ ...s.get("divers", "div-2"), sac: 28 }, "器材员");
+  assert.equal(s.get("tasks", a.id).assignments[0].plannedLiters, 1129);
+  // 再调到 30：30×12×2.8×1.2=1210；1210+887=2097 > 2040 → 拒绝
+  const aBefore = JSON.stringify(s.get("tasks", a.id));
+  const bBefore = JSON.stringify(s.get("tasks", b.id));
+  const dBefore = JSON.stringify(s.get("divers", "div-2"));
+  const code = errCode(() => s.upsertDiver({ ...s.get("divers", "div-2"), sac: 30 }, "器材员"));
+  assert.equal(code, "GAS_SHORTFALL");
+  // 失败明细指出被击穿的任务
+  let detailsErr = null;
+  try { s.upsertDiver({ ...s.get("divers", "div-2"), sac: 30 }, "器材员"); }
+  catch (e) { detailsErr = e; }
+  assert.ok(detailsErr && ["S-1", "S-2"].includes(detailsErr.details.task), "明细任务号异常");
+  assert.equal(JSON.stringify(s.get("divers", "div-2")), dBefore, "SAC 被部分修改");
+  assert.equal(JSON.stringify(s.get("tasks", a.id)), aBefore, "任务A被部分修改");
+  assert.equal(JSON.stringify(s.get("tasks", b.id)), bBefore, "任务B被部分修改");
+});
+
+test("下调 SAC 放行并同步计划气量；执行中任务随后可正常关闭（不会拖到关闭才报气量不足）", () => {
+  const s = makeStore();
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  s.startTask(t.id, "现场指挥");
+  // 执行中把 SAC 18→15（下调）：计划气量同步变小
+  s.upsertDiver({ ...s.get("divers", "div-1"), sac: 15 }, "潜水长");
+  assert.equal(s.get("tasks", t.id).assignments[0].plannedLiters, Store.gasRequired(18, 30, 15));
+  // 关闭按实际耗气扣瓶：15×30×2.8=1260L
+  const pressureBefore = s.get("cylinders", "cyl-1").pressureBar;
+  const closed = s.closeTask(t.id, { actualMin: 30, outcome: "normal" }, "现场指挥");
+  assert.equal(closed.status, "closed");
+  const pressureAfter = s.get("cylinders", "cyl-1").pressureBar;
+  assert.equal(pressureAfter, Math.round((pressureBefore - 1260 / 12) * 10) / 10);
+});
+
+test("SAC 变更只重算活动任务：已关闭/已驳回任务保持原计划气量", () => {
+  const s = makeStore();
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  s.startTask(t.id, "现场指挥");
+  s.closeTask(t.id, { actualMin: 20, outcome: "normal" }, "现场指挥");
+  const closedPlan = s.get("tasks", t.id).assignments[0].plannedLiters;
+  s.upsertDiver({ ...s.get("divers", "div-1"), sac: 40 }, "潜水长"); // 无活动任务占用，随意上调
+  assert.equal(s.get("tasks", t.id).assignments[0].plannedLiters, closedPlan, "已关闭任务计划气量不应被重算");
+  assert.equal(s.audits().some(a => a.action === "recalc" && a.entityId === t.id), false, "不应为重算写审计");
+});
+
+test("只改姓名/证书不改 SAC 时不重算任务气量", () => {
+  const s = makeStore();
+  const t = s.list("tasks")[0];
+  const planBefore = s.get("tasks", t.id).assignments[0].plannedLiters;
+  const d = s.get("divers", "div-1");
+  s.upsertDiver({ ...d, name: d.name, note: "补记电话" }, "潜水长");
+  assert.equal(s.get("tasks", t.id).assignments[0].plannedLiters, planBefore);
+  assert.equal(s.audits().some(a => a.action === "recalc"), false);
+});
+
+test("SAC 上调被拒事务原子：磁盘不写、审计不增、内存与重载一致", () => {
+  const mem = new MemStorage();
+  const s = makeStore(mem);
+  const t = s.list("tasks")[0];
+  s.approveTask(t.id, "复核员");
+  const diskBefore = mem.getItem(Store.DB_KEY);
+  const writesBefore = mem.writes;
+  const auditsBefore = s.audits().length;
+  assert.equal(errCode(() => s.upsertDiver({ ...s.get("divers", "div-1"), sac: 60 }, "潜水长")), "GAS_SHORTFALL");
+  assert.equal(mem.writes, writesBefore, "被拒保存不允许 setItem");
+  assert.equal(mem.getItem(Store.DB_KEY), diskBefore, "磁盘内容变化");
+  assert.equal(s.audits().length, auditsBefore, "审计被写入");
+  const reloaded = new Store({ storage: mem, now, uuid: () => "u" });
+  assert.equal(reloaded.get("divers", "div-1").sac, 18);
+  assert.equal(reloaded.get("tasks", t.id).assignments[0].plannedLiters, 1814);
+  assert.equal(reloaded.get("tasks", t.id).status, "approved");
+});

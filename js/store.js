@@ -165,14 +165,16 @@
     }
 
     /* 事务式提交：所有变更发生在传入的 draft 上；mutator 返回审计条目
-       （不返回则不记审计）。校验在 mutator 内抛出 → draft 被整体丢弃，
+       （单对象或数组，不返回则不记审计）。校验在 mutator 内抛出 → draft 被整体丢弃，
        最后只有一次 setItem；setItem 失败（配额/隐私模式）时 this.state
-       不被替换，内存数据也保持原状 → 不留下部分数据。 */
+       不被替换，内存数据也保持原状 → 不留下部分数据。
+       数组中越靠后的审计在列表中越靠前（主变更放最后）。 */
     commit(mutator) {
       const draft = JSON.parse(JSON.stringify(this.state));
       const auditSpec = mutator(draft);
       if (auditSpec) {
-        draft.audits.unshift({ id: this._uuid(), ts: this._now(), ...auditSpec });
+        const specs = Array.isArray(auditSpec) ? auditSpec : [auditSpec];
+        for (const spec of specs) draft.audits.unshift({ id: this._uuid(), ts: this._now(), ...spec });
       }
       if (this.storage) this.storage.setItem(DB_KEY, JSON.stringify(draft)); // 抛错则整体回滚
       this.state = draft;
@@ -249,10 +251,34 @@
         let saved;
         if (input.id) {
           saved = this._find(state, "divers", input.id);
-          const before = this._snapshot(saved);
+          const diverBefore = this._snapshot(saved);
+          const sacChanged = saved.sac !== data.sac;
           Object.assign(saved, data);
           id = saved.id;
-          return { actor, action: "update", entity: "divers", entityId: id, before, after: this._snapshot(saved) };
+          const specs = [
+            { actor, action: "update", entity: "divers", entityId: id, before: diverBefore, after: this._snapshot(saved) },
+          ];
+          if (sacChanged) {
+            // SAC 变更：重算所有活动任务中该潜水员的计划耗气，再统一复核气量
+            for (const task of state.tasks.filter(t => ACTIVE_STATUSES.includes(t.status))) {
+              for (const a of task.assignments) {
+                if (a.diverId !== id) continue;
+                const taskBefore = this._snapshot(task);
+                a.plannedLiters = gasRequired(task.depthM, task.plannedMin, data.sac);
+                specs.push({
+                  actor, action: "recalc", entity: "tasks", entityId: task.id,
+                  before: taskBefore, after: this._snapshot(task),
+                  note: `${diverBefore.name} SAC ${diverBefore.sac}→${data.sac}，按新耗气率重算计划气量`,
+                });
+              }
+            }
+            // 任一活动任务因此失去气量保障 → 抛错，草稿（人员/任务/审计）整体丢弃
+            this._revalidateGasForActiveTasks(state, {
+              diver: data.name, reason: "sac-change",
+              changed: ["sac"], from: diverBefore.sac, to: data.sac,
+            });
+          }
+          return specs;
         }
         saved = { id: this._uuid(), ...data };
         state.divers.push(saved);
@@ -497,7 +523,7 @@
         if (!gas.ok) {
           throw new ValidationError(
             "GAS_SHORTFALL",
-            `气瓶变更会使 ${task.code} 气量不足，请先补气或调整该潜次`,
+            `该变更会使 ${task.code} 气量不足，请先补气或调整该潜次`,
             { context: context || null, task: task.code, shortages: gas.shortages }
           );
         }
